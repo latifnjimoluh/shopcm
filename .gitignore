@@ -1,0 +1,14 @@
+# Windows
+Thumbs.db
+Desktop.ini
+
+# PHP / WAMP
+php_error.log
+.vscode/
+.idea/
+
+# Projet
+.sixth/
+.gemini/
+*.tmp
+*.log

